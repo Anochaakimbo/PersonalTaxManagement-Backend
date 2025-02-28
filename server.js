@@ -3,10 +3,13 @@ var app = express();
 var bodyParser = require('body-parser');
 var mysql = require('mysql');
 const bcrypt = require('bcryptjs');
+const multer = require('multer');
+const path = require('path');
 require('dotenv').config();
 
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 
 app.get('/', function (req, res) {
     return res.send({ error: true, message: 'Test Student Web API' });
@@ -19,10 +22,31 @@ var dbConn = mysql.createConnection({
     database: process.env.DB_NAME,
 });
 
+
 dbConn.connect();
 
+// Multer Storage Configuration
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, 'profile/');
+    },
+    filename: function (req, file, cb) {
+        cb(null, `profile_${Date.now()}${path.extname(file.originalname)}`);
+    }
+});
 
-// Insert account
+const upload = multer({ storage: storage });
+
+const fs = require('fs');
+
+const uploadDir = path.join(__dirname, 'profile');
+
+// ตรวจสอบว่ามีโฟลเดอร์หรือไม่ ถ้าไม่มีให้สร้าง
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+
 app.post('/insertUser', async function (req, res) {
     let post = req.body;
     let { email, password, fname, lname, gender } = post;
@@ -50,7 +74,7 @@ app.post('/insertUser', async function (req, res) {
     });
 });
 
-// Login
+
 app.post('/login', async function (req, res) {
     let user = req.body;
     let { email, password } = user;
@@ -82,7 +106,6 @@ app.post('/login', async function (req, res) {
     });
 });
 
-// Search student by ID
 app.get('/search/:id', function (req, res) {
     let id = req.params.id;
 
@@ -99,7 +122,8 @@ app.get('/search/:id', function (req, res) {
                 email: results[0].email,
                 fname: results[0].fname,
                 lname: results[0].lname,
-                gender: results[0].gender
+                gender: results[0].gender,
+                profile_image: results[0].profile_image || null
             });
         } else {
             return res.status(400).send({ error: true, message: 'User not found!!' });
@@ -107,7 +131,165 @@ app.get('/search/:id', function (req, res) {
     });
 });
 
-// Set port
+app.put('/updateUser/:id', function (req, res) {
+    let userId = req.params.id;
+    let { email, fname, lname, gender } = req.body;
+
+    if (!userId || !email || !fname || !lname || !gender) {
+        return res.status(400).send({ error: true, message: 'Missing fields' });
+    }
+
+    dbConn.query(
+        'UPDATE user SET email = ?, fname = ?, lname = ?, gender = ? WHERE id = ?',
+        [email, fname, lname, gender, userId],
+        function (error, results) {
+            if (error) throw error;
+            return res.send({ message: 'User updated successfully' });
+        }
+    );
+});
+
+app.post('/change-password', function (req, res) {
+    let { userId, oldPassword, newPassword } = req.body;
+
+    if (!userId || !oldPassword || !newPassword) {
+        return res.status(400).send({ error: true, message: 'กรุณากรอกข้อมูลให้ครบถ้วน' });
+    }
+
+    // ✅ ดึงรหัสผ่านเก่าจากฐานข้อมูล
+    dbConn.query('SELECT password FROM user WHERE id = ?', [userId], function (error, results) {
+        if (error) {
+            console.error("❌ Database error:", error);
+            return res.status(500).send({ error: true, message: 'เกิดข้อผิดพลาดในการดึงรหัสผ่าน' });
+        }
+
+        if (results.length === 0) {
+            return res.status(404).send({ error: true, message: 'ไม่พบผู้ใช้' });
+        }
+
+        const storedPassword = results[0].password;
+
+        // ✅ ตรวจสอบรหัสผ่านเก่าด้วย bcrypt.compare()
+        bcrypt.compare(oldPassword, storedPassword, function (err, isMatch) {
+            if (err) {
+                console.error("❌ Bcrypt error:", err);
+                return res.status(500).send({ error: true, message: 'เกิดข้อผิดพลาดในการตรวจสอบรหัสผ่าน' });
+            }
+
+            if (!isMatch) {
+                return res.status(400).send({ error: true, message: 'รหัสผ่านเก่าไม่ถูกต้อง' });
+            }
+
+            // ✅ ถ้ารหัสผ่านถูกต้อง แฮชรหัสผ่านใหม่
+            bcrypt.genSalt(10, function (err, salt) {
+                if (err) {
+                    console.error("❌ Bcrypt error:", err);
+                    return res.status(500).send({ error: true, message: 'เกิดข้อผิดพลาดในการสร้าง Salt' });
+                }
+
+                bcrypt.hash(newPassword, salt, function (err, hashedNewPassword) {
+                    if (err) {
+                        console.error("❌ Bcrypt error:", err);
+                        return res.status(500).send({ error: true, message: 'เกิดข้อผิดพลาดในการแฮชรหัสผ่านใหม่' });
+                    }
+
+                    // ✅ อัปเดตรหัสผ่านใหม่ในฐานข้อมูล
+                    dbConn.query('UPDATE user SET password = ? WHERE id = ?', [hashedNewPassword, userId], function (error) {
+                        if (error) {
+                            console.error("❌ Database error:", error);
+                            return res.status(500).send({ error: true, message: 'เกิดข้อผิดพลาดในการอัปเดตรหัสผ่าน' });
+                        }
+
+                        return res.send({ message: 'เปลี่ยนรหัสผ่านสำเร็จ!' });
+                    });
+                });
+            });
+        });
+    });
+});
+
+
+app.get('/get-password/:id', function (req, res) {
+    let userId = req.params.id;
+
+    if (!userId) {
+        return res.status(400).send({ error: true, message: 'Missing user ID' });
+    }
+
+    // ✅ ใช้ dbConn.query() แทน query()
+    dbConn.query('SELECT password FROM user WHERE id = ?', [userId], function (error, results) {
+        if (error) {
+            console.error("❌ Database error:", error);
+            return res.status(500).send({ error: true, message: 'เกิดข้อผิดพลาดในการดึงรหัสผ่าน' });
+        }
+
+        if (results.length === 0) {
+            return res.status(404).send({ error: true, message: 'User not found' });
+        }
+
+        return res.json({ password: results[0].password }); // ✅ ส่งค่า JSON กลับไป
+    });
+});
+
+
+
+
+
+
+app.post('/uploadProfileImage/:id', upload.single('profile_image'), function (req, res) {
+    let userId = req.params.id;
+
+    if (!req.file) {
+        return res.status(400).send({ error: true, message: 'กรุณาอัปโหลดไฟล์รูปภาพ' });
+    }
+
+    let imagePath = `http://10.0.2.2/projectApi/profile/${req.file.filename}`;
+
+    dbConn.query(
+        'UPDATE user SET profile_image = ? WHERE id = ?',
+        [imagePath, userId],
+        function (error, results) {
+            if (error) {
+                console.error("Database Error:", error); // Log error เพื่อ Debug
+                return res.status(500).send({ error: true, message: 'เกิดข้อผิดพลาดในระบบฐานข้อมูล' });
+            }
+    
+            if (results.affectedRows === 0) {
+                return res.status(404).send({ error: true, message: 'ไม่พบผู้ใช้ที่ต้องการอัปเดตรูปภาพ' });
+            }
+    
+            return res.send({ message: 'อัปโหลดรูปภาพสำเร็จ!', profile_image: imagePath });
+        }
+    );
+    
+});
+
+app.get('/getUserProfile/:id', function (req, res) {
+    let userId = parseInt(req.params.id, 10);
+
+    dbConn.query(
+        'SELECT profile_image FROM user WHERE id = ?',
+        [userId],
+        function (error, results) {
+            if (error) {
+                console.error("Database Error:", error);
+                return res.status(500).send({ error: true, message: 'เกิดข้อผิดพลาดในระบบฐานข้อมูล' });
+            }
+
+            if (results.length === 0) {
+                return res.status(404).send({ error: true, message: 'ไม่พบผู้ใช้' });
+            }
+
+            return res.send({ profile_image: results[0].profile_image });
+        }
+    );
+});
+
+
+
+
+
+
 app.listen(3000, function () {
     console.log('Node app is running on port 3000');
 });
