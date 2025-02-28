@@ -8,8 +8,13 @@ var fs = require('fs');
 const bcrypt = require('bcryptjs');
 require('dotenv').config();
 
+app.use('/uploads', express.static('uploads'));
+
+app.use(express.json()); // ✅ ต้องใช้ middleware นี้
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+
+
 
 var dbConn = mysql.createConnection({
     host: process.env.DB_HOST,
@@ -21,6 +26,8 @@ var dbConn = mysql.createConnection({
 
 dbConn.connect();
 
+const util = require('util');
+const query = util.promisify(dbConn.query).bind(dbConn);
 // 📌 ตรวจสอบและสร้างโฟลเดอร์สำหรับอัปโหลดไฟล์อัตโนมัติ
 const uploadDirs = ['./uploads/documents/', './uploads/images/'];
 uploadDirs.forEach(dir => {
@@ -38,43 +45,41 @@ const documentStorage = multer.diskStorage({
     }
 });
 
-// 📌 ตั้งค่า multer สำหรับอัปโหลดรูปภาพ
 const imageStorage = multer.diskStorage({
     destination: './uploads/images/',
     filename: (req, file, cb) => {
-        cb(null, Date.now() + path.extname(file.originalname));
+        const extension = path.extname(file.originalname) || '.jpg'; // ✅ ถ้าไม่มี ใช้ค่าเริ่มต้น
+        cb(null, Date.now() + extension);
     }
 });
+
 
 const uploadDocument = multer({ storage: documentStorage });
 const uploadImage = multer({ storage: imageStorage });
 
 // 📌 API อัปโหลดเอกสาร
 app.post('/upload-document/:user_id', uploadDocument.single('document'), (req, res) => {
-    const user_id = req.params.user_id;
-    const document_url = `/uploads/documents/${req.file.filename}`;
+    console.log("req.file:", req.file);
+    console.log("req.body:", req.body);
+    console.log("req.params:", req.params);
 
-    if (!user_id || !req.file) {
-        return res.status(400).send({ error: true, message: 'กรุณาแนบไฟล์และระบุ user_id' });
+    if (!req.file) {
+        return res.status(400).send({ error: true, message: 'ไฟล์หายไป!' });
     }
 
-    const sql = `INSERT INTO user_documents (user_id, document_url) VALUES (?, ?)`;
-    dbConn.query(sql, [user_id, document_url], (err, result) => {
-        if (err) {
-            return res.status(500).send({ error: true, message: 'Upload failed' });
-        }
-        res.send({ success: true, document_url });
-    });
+    res.send({ success: true, message: 'Upload success' });
 });
 
+
 // 📌 API อัปโหลดรูปภาพ
-app.post('/upload-image/:user_id', uploadImage.single('image'), (req, res) => {
+app.post('/upload-image/:user_id', uploadImage.single('file'), (req, res) => {
+    
+    if (!req.file) {
+        return res.status(400).send({ error: true, message: 'ไฟล์รูปภาพหายไป' });
+    }
+
     const user_id = req.params.user_id;
     const image_url = `/uploads/images/${req.file.filename}`;
-
-    if (!user_id || !req.file) {
-        return res.status(400).send({ error: true, message: 'กรุณาแนบไฟล์รูปและระบุ user_id' });
-    }
 
     const sql = `INSERT INTO user_documents (user_id, document_url) VALUES (?, ?)`;
     dbConn.query(sql, [user_id, image_url], (err, result) => {
@@ -84,11 +89,11 @@ app.post('/upload-image/:user_id', uploadImage.single('image'), (req, res) => {
         res.send({ success: true, image_url });
     });
 });
-
+    
 // 📌 API ดึงเอกสารและรูปภาพของผู้ใช้
 app.get('/user-files/:user_id', (req, res) => {
     const user_id = req.params.user_id;
-    const sql = `SELECT id, document_url, uploaded_at FROM user_documents WHERE user_id = ?`;
+    const sql = `SELECT id, document_url, uploaded_at FROM user_documents WHERE user_id = ?  AND deleted_at IS NULL`;
 
     dbConn.query(sql, [user_id], (err, results) => {
         if (err) {
@@ -101,37 +106,20 @@ app.get('/user-files/:user_id', (req, res) => {
 // 📌 API ลบเอกสารหรือรูปภาพ
 app.delete('/delete-file/:id', (req, res) => {
     const file_id = req.params.id;
-    
-    // ค้นหาที่อยู่ของไฟล์ก่อนลบ
-    const findFileQuery = `SELECT document_url FROM user_documents WHERE id = ?`;
-    dbConn.query(findFileQuery, [file_id], (err, results) => {
+
+    // อัปเดตค่า deleted_at ให้เป็น timestamp ปัจจุบัน
+    const softDeleteQuery = `UPDATE user_documents SET deleted_at = NOW() WHERE id = ?`;
+
+    dbConn.query(softDeleteQuery, [file_id], (err, result) => {
         if (err) {
-            return res.status(500).send({ error: true, message: 'Error finding file' });
+            return res.status(500).send({ error: true, message: 'Error deleting file' });
         }
-
-        if (results.length === 0) {
-            return res.status(400).send({ error: true, message: 'File not found' });
-        }
-
-        const filePath = `.${results[0].document_url}`;
-        
-        // ลบไฟล์จากเซิร์ฟเวอร์
-        fs.unlink(filePath, (err) => {
-            if (err) {
-                console.error('Failed to delete file:', err);
-            }
-        });
-
-        // ลบข้อมูลจากฐานข้อมูล
-        const deleteQuery = `DELETE FROM user_documents WHERE id = ?`;
-        dbConn.query(deleteQuery, [file_id], (err, result) => {
-            if (err) {
-                return res.status(500).send({ error: true, message: 'Error deleting file' });
-            }
-            res.send({ success: true, message: 'File deleted successfully' });
-        });
+        res.send({ success: true, message: 'File soft deleted successfully' });
     });
 });
+
+
+
 
 // 🚀 API การจัดการผู้ใช้ (โค้ดเดิมของคุณ)
 app.post('/insertUser', async function (req, res) {
