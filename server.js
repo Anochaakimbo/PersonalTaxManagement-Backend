@@ -21,7 +21,6 @@ var dbConn = mysql.createConnection({
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
-    port: 3308
 });
 
 dbConn.connect();
@@ -70,38 +69,75 @@ app.post('/upload-document/:user_id', uploadDocument.single('document'), (req, r
     res.send({ success: true, message: 'Upload success' });
 });
 
-
-// 📌 API อัปโหลดรูปภาพ
+// ส่วนของ API อัปโหลดรูปภาพ - แก้ไขตรงการเก็บพาธของไฟล์รูปภาพ
 app.post('/upload-image/:user_id', uploadImage.single('file'), (req, res) => {
-    
+    const year = req.body.year;  // รับปีจาก body
     if (!req.file) {
         return res.status(400).send({ error: true, message: 'ไฟล์รูปภาพหายไป' });
     }
 
     const user_id = req.params.user_id;
+    // แก้ไขพาธให้ถูกต้อง
     const image_url = `/uploads/images/${req.file.filename}`;
 
-    const sql = `INSERT INTO user_documents (user_id, document_url) VALUES (?, ?)`;
-    dbConn.query(sql, [user_id, image_url], (err, result) => {
+    const sql = 'INSERT INTO user_documents (user_id, document_url, year) VALUES (?, ?, ?)';
+    dbConn.query(sql, [user_id, image_url, year], (err, result) => {
         if (err) {
             return res.status(500).send({ error: true, message: 'Upload failed' });
         }
         res.send({ success: true, image_url });
     });
 });
-    
-// 📌 API ดึงเอกสารและรูปภาพของผู้ใช้
-app.get('/user-files/:user_id', (req, res) => {
-    const user_id = req.params.user_id;
-    const sql = `SELECT id, document_url, uploaded_at FROM user_documents WHERE user_id = ?  AND deleted_at IS NULL`;
 
-    dbConn.query(sql, [user_id], (err, results) => {
+// แก้ไข API ดึงข้อมูลเอกสารตาม ID
+app.get('/user-files/document/:document_id', (req, res) => {
+    const document_id = req.params.document_id;
+
+    console.log('📌 กำลังดึงข้อมูลเอกสาร ID:', document_id);
+
+    const sql = 'SELECT id, document_url, uploaded_at, year FROM user_documents WHERE id = ? AND deleted_at IS NULL';
+
+    dbConn.query(sql, [document_id], (err, results) => {
         if (err) {
-            return res.status(500).send({ error: true, message: 'Error fetching files' });
+            console.error('❌ SQL Error:', err);
+            return res.status(500).send({ error: true, message: 'Error fetching document' });
         }
-        res.send(results);
+
+        if (results.length === 0) {
+            return res.status(404).send({ error: true, message: 'Document not found' });
+        }
+
+        console.log('✅ ผลลัพธ์ที่ได้:', results[0]);
+        res.send(results[0]);
     });
 });
+
+app.get('/user-files/:user_id/year/:year', (req, res) => {
+    const user_id = req.params.user_id;
+    const year = req.params.year;  // รับปีที่ต้องการกรอง
+
+    console.log('📌 กำลังดึงข้อมูลของ user_id:', user_id, 'ปี:', year); // ✅ Debug
+
+    const sql = `SELECT id, document_url, uploaded_at FROM user_documents WHERE user_id = ? AND year = ? AND deleted_at IS NULL`;
+
+    dbConn.query(sql, [user_id, year], (err, results) => {
+        if (err) {
+            console.error('❌ SQL Error:', err); // ✅ Debug เช็ก error
+            return res.status(500).send({ error: true, message: 'Error fetching files' });
+        }
+
+        // เพิ่มฟิลด์ year โดยคำนวณจาก uploaded_at
+        const documentsWithYear = results.map(document => {
+            const year = new Date(document.uploaded_at).getFullYear();
+            return { ...document, year: year };
+        });
+
+        console.log('✅ ผลลัพธ์ที่ได้:', documentsWithYear); // ✅ ดูข้อมูลที่ดึงออกมาจากฐานข้อมูล
+
+        res.send(documentsWithYear);
+    });
+});
+
 
 // 📌 API ลบเอกสารหรือรูปภาพ
 app.delete('/delete-file/:id', (req, res) => {
