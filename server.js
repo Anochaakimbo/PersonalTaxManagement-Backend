@@ -6,9 +6,13 @@ const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const path = require('path');
 require('dotenv').config();
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
+app.use('/uploads', express.static('uploads'));
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
 
 app.get('/', function (req, res) {
@@ -45,6 +49,133 @@ const uploadDir = path.join(__dirname, 'profile');
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
 }
+
+const util = require('util');
+const query = util.promisify(dbConn.query).bind(dbConn);
+
+const uploadDirs1 = ['./uploads/documents/', './uploads/images/'];
+uploadDirs1.forEach(dir => {
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+        console.log('📂 Created folder:', dir);
+    }
+});
+
+// 📌 ตั้งค่า multer สำหรับอัปโหลดเอกสาร
+const documentStorage = multer.diskStorage({
+    destination: './uploads/documents/',
+    filename: (req, file, cb) => {
+        cb(null, Date.now() + path.extname(file.originalname));
+    }
+});
+
+const imageStorage = multer.diskStorage({
+    destination: './uploads/images/',
+    filename: (req, file, cb) => {
+        const extension = path.extname(file.originalname) || '.jpg'; // ✅ ถ้าไม่มี ใช้ค่าเริ่มต้น
+        cb(null, Date.now() + extension);
+    }
+});
+
+const uploadDocument = multer({ storage: documentStorage });
+const uploadImage = multer({ storage: imageStorage });
+
+app.post('/upload-document/:user_id', uploadDocument.single('document'), (req, res) => {
+    console.log("req.file:", req.file);
+    console.log("req.body:", req.body);
+    console.log("req.params:", req.params);
+
+    if (!req.file) {
+        return res.status(400).send({ error: true, message: 'ไฟล์หายไป!' });
+    }
+
+    res.send({ success: true, message: 'Upload success' });
+});
+
+// ส่วนของ API อัปโหลดรูปภาพ - แก้ไขตรงการเก็บพาธของไฟล์รูปภาพ
+app.post('/upload-image/:user_id', uploadImage.single('file'), (req, res) => {
+    const year = req.body.year;  // รับปีจาก body
+    if (!req.file) {
+        return res.status(400).send({ error: true, message: 'ไฟล์รูปภาพหายไป' });
+    }
+
+    const user_id = req.params.user_id;
+    // แก้ไขพาธให้ถูกต้อง
+    const image_url = `/uploads/images/${req.file.filename}`;
+
+    const sql = 'INSERT INTO user_documents (user_id, document_url, year) VALUES (?, ?, ?)';
+    dbConn.query(sql, [user_id, image_url, year], (err, result) => {
+        if (err) {
+            return res.status(500).send({ error: true, message: 'Upload failed' });
+        }
+        res.send({ success: true, image_url });
+    });
+});
+
+// แก้ไข API ดึงข้อมูลเอกสารตาม ID
+app.get('/user-files/document/:document_id', (req, res) => {
+    const document_id = req.params.document_id;
+
+    console.log('📌 กำลังดึงข้อมูลเอกสาร ID:', document_id);
+
+    const sql = 'SELECT id, user_id, document_url, uploaded_at, year FROM user_documents WHERE id = ? AND deleted_at IS NULL';
+
+    dbConn.query(sql, [document_id], (err, results) => {
+        if (err) {
+            console.error('❌ SQL Error:', err);
+            return res.status(500).send({ error: true, message: 'Error fetching document' });
+        }
+
+        if (results.length === 0) {
+            return res.status(404).send({ error: true, message: 'Document not found' });
+        }
+
+        console.log('✅ ผลลัพธ์ที่ได้:', results[0]);
+        res.send(results[0]);
+    });
+});
+
+app.get('/user-files/:user_id/year/:year', (req, res) => {
+    const user_id = req.params.user_id;
+    const year = req.params.year;  // รับปีที่ต้องการกรอง
+
+    console.log('📌 กำลังดึงข้อมูลของ user_id:', user_id, 'ปี:', year); // ✅ Debug
+
+    const sql = `SELECT id, document_url, uploaded_at FROM user_documents WHERE user_id = ? AND year = ? AND deleted_at IS NULL`;
+
+    dbConn.query(sql, [user_id, year], (err, results) => {
+        if (err) {
+            console.error('❌ SQL Error:', err); // ✅ Debug เช็ก error
+            return res.status(500).send({ error: true, message: 'Error fetching files' });
+        }
+
+        // เพิ่มฟิลด์ year โดยคำนวณจาก uploaded_at
+        const documentsWithYear = results.map(document => {
+            const year = new Date(document.uploaded_at).getFullYear();
+            return { ...document, year: year };
+        });
+
+        console.log('✅ ผลลัพธ์ที่ได้:', documentsWithYear); // ✅ ดูข้อมูลที่ดึงออกมาจากฐานข้อมูล
+
+        res.send(documentsWithYear);
+    });
+});
+
+
+// 📌 API ลบเอกสารหรือรูปภาพ
+app.delete('/delete-file/:id', (req, res) => {
+    const file_id = req.params.id;
+
+    // อัปเดตค่า deleted_at ให้เป็น timestamp ปัจจุบัน
+    const softDeleteQuery = `UPDATE user_documents SET deleted_at = NOW() WHERE id = ?`;
+
+    dbConn.query(softDeleteQuery, [file_id], (err, result) => {
+        if (err) {
+            return res.status(500).send({ error: true, message: 'Error deleting file' });
+        }
+        res.send({ success: true, message: 'File soft deleted successfully' });
+    });
+});
 
 
 app.post('/insertUser', async function (req, res) {
@@ -327,21 +458,16 @@ app.post("/insertIncome", async function (req, res) {
     });
 });
 
-app.get('/getAllIncome', function (req, res) {
-    let query = `
-        SELECT income.id, income.incomebalance, income.user_id, income.year, 
-               income_type.incometype_name
-        FROM income
-        JOIN income_type ON income.incometype_id = income_type.id
-    `;
+app.get('/getAllIncomes', function (req, res) {
+    let query = 'SELECT * FROM income;'
 
-    dbConn.query(query, function (error, results, fields) {
+    dbConn.query(query, function (error, results) {
         if (error) {
-            console.log("❌ Error ในการดึงข้อมูล:", error);
+            console.log("❌ Error:", error);
             return res.status(500).send({ error: true, message: "เกิดข้อผิดพลาดในการดึงข้อมูล" });
         }
 
-        return res.send({ success: 1, data: results });
+        return res.send(results);
     });
 });
 
@@ -432,20 +558,15 @@ app.post("/insertTaxDeduction", async function (req, res) {
 });
 
 app.get('/getAllTaxDeductions', function (req, res) {
-    let query = `
-        SELECT taxdeduction.id, taxdeduction.taxdeductiontype_balance, taxdeduction.user_id, taxdeduction.year, 
-               taxdeduction_type.taxdeductiontype_name
-        FROM taxdeduction
-        JOIN taxdeduction_type ON taxdeduction.taxdeductiontype_id = taxdeduction_type.id
-    `;
+    let query = 'SELECT * FROM taxdeduction;'
 
-    dbConn.query(query, function (error, results, fields) {
+    dbConn.query(query, function (error, results) {
         if (error) {
-            console.log("❌ Error ในการดึงข้อมูลค่าลดหย่อน:", error);
-            return res.status(500).send({ error: true, message: "เกิดข้อผิดพลาดในการดึงข้อมูลค่าลดหย่อน" });
+            console.log("❌ Error:", error);
+            return res.status(500).send({ error: true, message: "เกิดข้อผิดพลาดในการดึงข้อมูลการหักภาษี" });
         }
 
-        return res.send({ success: 1, data: results });
+        return res.send(results);
     });
 });
 
@@ -539,6 +660,170 @@ app.get('/getTaxDeductionByUser/:user_id', function (req, res) {
         });
     });
 });
+
+app.put('/updateTaxDeduction/:id', function (req, res) {
+    let taxdeduction_id = req.params.id;
+    let { taxdeductiontype_balance, taxdeductiontype_id, user_id, year } = req.body;
+
+    if (!taxdeduction_id || !taxdeductiontype_balance || !taxdeductiontype_id || !user_id || !year) {
+        return res.status(400).send({ error: true, message: "Please provide full tax deduction data and the id." });
+    }
+
+    let updateQuery = `
+        UPDATE taxdeduction
+        SET taxdeductiontype_balance = ?, taxdeductiontype_id = ?, user_id = ?, year = ?
+        WHERE id = ?
+    `;
+    
+    dbConn.query(updateQuery, [taxdeductiontype_balance, taxdeductiontype_id, user_id, year, taxdeduction_id], (error, results) => {
+        if (error) {
+            console.log("Error updating tax deduction: ", error);
+            return res.status(500).send({ error: true, message: "Error updating tax deduction" });
+        }
+        return res.send({ success: 1, message: "Tax deduction updated successfully." });
+    });
+});
+
+
+app.put('/updateIncome/:id', function (req, res) {
+    let income_id = req.params.id;
+    let { incomebalance, incometype_id, user_id, year } = req.body;
+
+    if (!income_id || !incomebalance || !incometype_id || !user_id || !year) {
+        return res.status(400).send({ error: true, message: "Please provide full income data and the id." });
+    }
+
+    let updateQuery = `
+        UPDATE income 
+        SET incomebalance = ?, incometype_id = ?, user_id = ?, year = ?
+        WHERE id = ?
+    `;
+    
+    dbConn.query(updateQuery, [incomebalance, incometype_id, user_id, year, income_id], (error, results) => {
+        if (error) {
+            console.log("Error updating income: ", error);
+            return res.status(500).send({ error: true, message: "Error updating income" });
+        }
+        return res.send({ success: 1, message: "Income updated successfully." });
+    });
+});
+
+
+
+app.post('/send-otp', async function (req, res) {
+    const { email } = req.body;
+    
+    if (!email) {
+        return res.status(400).send({ error: true, message: 'Please provide an email address.' });
+    }
+    
+    // ตรวจสอบว่าอีเมลมีอยู่ในระบบหรือไม่
+    dbConn.query('SELECT * FROM user WHERE email = ?', [email], async function (error, results) {
+        if (error) throw error;
+        
+        if (results.length === 0) {
+            return res.status(404).send({ success: 0, message: 'Email not found' });
+        }
+
+        // สร้าง OTP (ตัวเลข 6 หลัก)
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expires = new Date();
+        expires.setMinutes(expires.getMinutes() + 5); // OTP หมดอายุใน 5 นาที
+
+        // บันทึก OTP ลงฐานข้อมูล
+        dbConn.query(
+            'UPDATE user SET otp_code = ?, otp_expires = ? WHERE email = ?',
+            [otp, expires, email],
+            async function (error) {
+                if (error) throw error;
+                try {
+                    const transporter = nodemailer.createTransport({
+                        host: 'smtp.gmail.com',
+                        port: 587,
+                        secure: false,
+                        auth: {
+                            user: 'bbcorn123za@gmail.com',
+                            pass: 'syptqkcjdltabnur'
+                        }
+                    });
+
+                    // รายละเอียดอีเมล
+                    const mailOptions = {
+                        from: 'bbcorn123za@gmail.com',
+                        to: email,
+                        subject: 'รหัส OTP สำหรับรีเซ็ตรหัสผ่าน',
+                        html: `<p>รหัส OTP ของคุณคือ: <strong>${otp}</strong></p>
+                              <p>รหัสนี้จะหมดอายุใน 5 นาที</p>`
+                    };
+
+                    await transporter.sendMail(mailOptions);
+                    return res.send({ success: 1, message: 'OTP sent to email' });
+
+                } catch (error) {
+                    return res.status(500).send({ error: true, message: 'Error sending email' });
+                }
+            }
+        );
+    });
+});
+
+app.post('/verify-otp', async function (req, res) {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+        return res.status(400).send({ error: true, message: 'Email and OTP are required' });
+    }
+
+    dbConn.query(
+        'SELECT * FROM user WHERE email = ? AND otp_code = ? AND otp_expires > NOW()',
+        [email, otp],
+        function (error, results) {
+            if (error) throw error;
+
+            if (results.length === 0) {
+                return res.status(400).send({ error: true, message: 'Invalid or expired OTP' });
+            }
+
+            return res.send({ success: 1, message: 'OTP Verified' });
+        }
+    );
+});
+
+
+
+app.post('/reset-password', async function (req, res) {
+    const { email,newPassword } = req.body;
+
+    if (!email ||!newPassword) {
+        return res.status(400).send({ error: true, message: 'All fields are required' });
+    }
+
+    dbConn.query(
+        'SELECT * FROM user WHERE email = ?',
+        [email],
+        async function (error, results) {
+            if (error) throw error;
+
+            if (results.length === 0) {
+                return res.status(400).send({ error: true, message: 'Invalid or expired OTP' });
+            }
+
+            // แฮ็ชรหัสผ่านใหม่
+            const salt = await bcrypt.genSalt(10);
+            const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+            dbConn.query(
+                'UPDATE user SET password = ?, otp_code = NULL, otp_expires = NULL WHERE email = ?',
+                [hashedPassword, email],
+                function (error) {
+                    if (error) throw error;
+                    return res.send({ success: 1, message: 'Password reset successfully' });
+                }
+            );
+        }
+    );
+});
+
 
 
 app.listen(3000, function () {
