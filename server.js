@@ -29,7 +29,7 @@ var dbConn = mysql.createConnection({
 
 dbConn.connect();
 
-// Multer Storage Configuration
+
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
         cb(null, 'profile/');
@@ -45,7 +45,6 @@ const fs = require('fs');
 
 const uploadDir = path.join(__dirname, 'profile');
 
-// ตรวจสอบว่ามีโฟลเดอร์หรือไม่ ถ้าไม่มีให้สร้าง
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
 }
@@ -61,64 +60,48 @@ uploadDirs1.forEach(dir => {
     }
 });
 
-// 📌 ตั้งค่า multer สำหรับอัปโหลดเอกสาร
-const documentStorage = multer.diskStorage({
-    destination: './uploads/documents/',
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + path.extname(file.originalname));
-    }
-});
+
 
 const imageStorage = multer.diskStorage({
     destination: './uploads/images/',
     filename: (req, file, cb) => {
-        const extension = path.extname(file.originalname) || '.jpg'; // ✅ ถ้าไม่มี ใช้ค่าเริ่มต้น
+        const extension = path.extname(file.originalname) || '.jpg';
         cb(null, Date.now() + extension);
     }
 });
 
-const uploadDocument = multer({ storage: documentStorage });
 const uploadImage = multer({ storage: imageStorage });
 
-app.post('/upload-document/:user_id', uploadDocument.single('document'), (req, res) => {
-    console.log("req.file:", req.file);
-    console.log("req.body:", req.body);
-    console.log("req.params:", req.params);
 
-    if (!req.file) {
-        return res.status(400).send({ error: true, message: 'ไฟล์หายไป!' });
-    }
 
-    res.send({ success: true, message: 'Upload success' });
-});
-
-// ส่วนของ API อัปโหลดรูปภาพ - แก้ไขตรงการเก็บพาธของไฟล์รูปภาพ
 app.post('/upload-image/:user_id', uploadImage.single('file'), (req, res) => {
-    const year = req.body.year;  // รับปีจาก body
+    const year = req.body.year;
+    const document_name = req.body.document_name; // รับชื่อไฟล์เอกสารจาก request
+
     if (!req.file) {
         return res.status(400).send({ error: true, message: 'ไฟล์รูปภาพหายไป' });
     }
 
     const user_id = req.params.user_id;
-    // แก้ไขพาธให้ถูกต้อง
     const image_url = `/uploads/images/${req.file.filename}`;
 
-    const sql = 'INSERT INTO user_documents (user_id, document_url, year) VALUES (?, ?, ?)';
-    dbConn.query(sql, [user_id, image_url, year], (err, result) => {
+    // เพิ่ม document_name ลงในฐานข้อมูล
+    const sql = 'INSERT INTO user_documents (user_id, document_name, document_url, year) VALUES (?, ?, ?, ?)';
+    dbConn.query(sql, [user_id, document_name, image_url, year], (err, result) => {
         if (err) {
-            return res.status(500).send({ error: true, message: 'Upload failed' });
+            return res.status(500).send({ error: true, message: 'อัปโหลดไม่สำเร็จ' });
         }
-        res.send({ success: true, image_url });
+        res.send({ success: true, image_url, document_name }); // ส่ง document_name กลับไปด้วย
     });
 });
 
-// แก้ไข API ดึงข้อมูลเอกสารตาม ID
+
 app.get('/user-files/document/:document_id', (req, res) => {
     const document_id = req.params.document_id;
 
     console.log('📌 กำลังดึงข้อมูลเอกสาร ID:', document_id);
 
-    const sql = 'SELECT id, user_id, document_url, uploaded_at, year FROM user_documents WHERE id = ? AND deleted_at IS NULL';
+    const sql = 'SELECT id, document_name, user_id, document_url, uploaded_at, year FROM user_documents WHERE id = ? AND deleted_at IS NULL';
 
     dbConn.query(sql, [document_id], (err, results) => {
         if (err) {
@@ -137,36 +120,32 @@ app.get('/user-files/document/:document_id', (req, res) => {
 
 app.get('/user-files/:user_id/year/:year', (req, res) => {
     const user_id = req.params.user_id;
-    const year = req.params.year;  // รับปีที่ต้องการกรอง
+    const year = req.params.year;
 
-    console.log('📌 กำลังดึงข้อมูลของ user_id:', user_id, 'ปี:', year); // ✅ Debug
+    console.log('📌 กำลังดึงข้อมูลของ user_id:', user_id, 'ปี:', year); 
 
-    const sql = `SELECT id, document_url, uploaded_at FROM user_documents WHERE user_id = ? AND year = ? AND deleted_at IS NULL`;
+    const sql = `SELECT id, document_name , document_url, uploaded_at FROM user_documents WHERE user_id = ? AND year = ? AND deleted_at IS NULL`;
 
     dbConn.query(sql, [user_id, year], (err, results) => {
         if (err) {
-            console.error('❌ SQL Error:', err); // ✅ Debug เช็ก error
+            console.error('❌ SQL Error:', err); 
             return res.status(500).send({ error: true, message: 'Error fetching files' });
         }
 
-        // เพิ่มฟิลด์ year โดยคำนวณจาก uploaded_at
         const documentsWithYear = results.map(document => {
             const year = new Date(document.uploaded_at).getFullYear();
             return { ...document, year: year };
         });
 
-        console.log('✅ ผลลัพธ์ที่ได้:', documentsWithYear); // ✅ ดูข้อมูลที่ดึงออกมาจากฐานข้อมูล
+        console.log('✅ ผลลัพธ์ที่ได้:', documentsWithYear);
 
         res.send(documentsWithYear);
     });
 });
 
 
-// 📌 API ลบเอกสารหรือรูปภาพ
 app.delete('/delete-file/:id', (req, res) => {
     const file_id = req.params.id;
-
-    // อัปเดตค่า deleted_at ให้เป็น timestamp ปัจจุบัน
     const softDeleteQuery = `UPDATE user_documents SET deleted_at = NOW() WHERE id = ?`;
 
     dbConn.query(softDeleteQuery, [file_id], (err, result) => {
@@ -176,6 +155,23 @@ app.delete('/delete-file/:id', (req, res) => {
         res.send({ success: true, message: 'File soft deleted successfully' });
     });
 });
+
+app.put('/documents/:document_id/update-name', (req, res) => {
+    const document_id = req.params.document_id; // ✅ แก้ req.param -> req.params
+    const { userId, newName } = req.body;
+
+    const updateQuery = "UPDATE user_documents SET document_name = ? WHERE id = ? AND user_id = ?";
+
+    dbConn.query(updateQuery, [newName, document_id, userId], (err, result) => {
+        if (err) {
+            console.error("❌ Error updating document name:", err);
+            return res.status(500).json({ success: false, message: "Error updating document name", error: err });
+        }
+
+        res.json({ success: true, message: "Document name updated successfully" });
+    });
+});
+
 
 
 app.post('/insertUser', async function (req, res) {
@@ -187,7 +183,6 @@ app.post('/insertUser', async function (req, res) {
     if (!post) {
         return res.status(400).send({ error: true, message: 'Please provide student data' });
     }
-
     dbConn.query('SELECT * FROM user WHERE email = ?', email, function (error, results, fields) {
         if (error) throw error;
 
@@ -224,7 +219,7 @@ app.post('/login', async function (req, res) {
                 if (result) {
                     return res.send({ 
                         "success": 1, 
-                        "id": results[0].id,  // ✅ เพิ่ม id กลับไปด้วย
+                        "id": results[0].id,
                         "email": results[0].email
                     });
                 } else {
@@ -287,7 +282,6 @@ app.post('/change-password', function (req, res) {
         return res.status(400).send({ error: true, message: 'กรุณากรอกข้อมูลให้ครบถ้วน' });
     }
 
-    // ✅ ดึงรหัสผ่านเก่าจากฐานข้อมูล
     dbConn.query('SELECT password FROM user WHERE id = ?', [userId], function (error, results) {
         if (error) {
             console.error("❌ Database error:", error);
@@ -300,7 +294,6 @@ app.post('/change-password', function (req, res) {
 
         const storedPassword = results[0].password;
 
-        // ✅ ตรวจสอบรหัสผ่านเก่าด้วย bcrypt.compare()
         bcrypt.compare(oldPassword, storedPassword, function (err, isMatch) {
             if (err) {
                 console.error("❌ Bcrypt error:", err);
@@ -311,7 +304,6 @@ app.post('/change-password', function (req, res) {
                 return res.status(400).send({ error: true, message: 'รหัสผ่านเก่าไม่ถูกต้อง' });
             }
 
-            // ✅ ถ้ารหัสผ่านถูกต้อง แฮชรหัสผ่านใหม่
             bcrypt.genSalt(10, function (err, salt) {
                 if (err) {
                     console.error("❌ Bcrypt error:", err);
@@ -324,7 +316,6 @@ app.post('/change-password', function (req, res) {
                         return res.status(500).send({ error: true, message: 'เกิดข้อผิดพลาดในการแฮชรหัสผ่านใหม่' });
                     }
 
-                    // ✅ อัปเดตรหัสผ่านใหม่ในฐานข้อมูล
                     dbConn.query('UPDATE user SET password = ? WHERE id = ?', [hashedNewPassword, userId], function (error) {
                         if (error) {
                             console.error("❌ Database error:", error);
@@ -347,7 +338,6 @@ app.get('/get-password/:id', function (req, res) {
         return res.status(400).send({ error: true, message: 'Missing user ID' });
     }
 
-    // ✅ ใช้ dbConn.query() แทน query()
     dbConn.query('SELECT password FROM user WHERE id = ?', [userId], function (error, results) {
         if (error) {
             console.error("❌ Database error:", error);
@@ -358,7 +348,7 @@ app.get('/get-password/:id', function (req, res) {
             return res.status(404).send({ error: true, message: 'User not found' });
         }
 
-        return res.json({ password: results[0].password }); // ✅ ส่งค่า JSON กลับไป
+        return res.json({ password: results[0].password }); 
     });
 });
 
@@ -381,7 +371,7 @@ app.post('/uploadProfileImage/:id', upload.single('profile_image'), function (re
         [imagePath, userId],
         function (error, results) {
             if (error) {
-                console.error("Database Error:", error); // Log error เพื่อ Debug
+                console.error("Database Error:", error);
                 return res.status(500).send({ error: true, message: 'เกิดข้อผิดพลาดในระบบฐานข้อมูล' });
             }
     
@@ -428,7 +418,6 @@ app.post("/insertIncome", async function (req, res) {
         return res.status(400).send({ error: true, message: "ค่าที่ส่งมาต้องเป็นตัวเลข" });
     }
 
-    // ✅ 1. ค้นหา user_id จาก email ก่อน
     let findUserQuery = "SELECT id FROM user WHERE email = ?";
     
     dbConn.query(findUserQuery, [email], (error, results) => {
@@ -443,7 +432,6 @@ app.post("/insertIncome", async function (req, res) {
 
         let user_id = results[0].id;
 
-        // ✅ 2. เพิ่มข้อมูลรายได้เข้าไป
         let insertQuery = "INSERT INTO income (incomebalance, incometype_id, user_id, year) VALUES (?, ?, ?, ?)";
         let values = [incomebalance, incometype_id, user_id, year];
 
